@@ -184,28 +184,32 @@ class UserViewSet(viewsets.ModelViewSet):
         },
         responses={200: OpenApiResponse(description="Successfully logged out")}
     )
+    
     @action(detail=False, methods=['post'], url_path='logout')
     def logout(self, request):
-        """Logout by blacklisting refresh token"""
-        try:
-            refresh_token = request.data.get('refresh_token')
-            if refresh_token:
-                token = RefreshToken(refresh_token)
-                token.blacklist()
-                return Response(
-                    {"message": "Successfully logged out"}, 
-                    status=status.HTTP_200_OK
-                )
-            else:
-                return Response(
-                    {"error": "Refresh token is required"}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        except Exception as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        return Response({"message": "Logged out successfully"})    
+    
+    # def logout(self, request):
+    #     """Logout by blacklisting refresh token"""
+    #     try:
+    #         refresh_token = request.data.get('refresh_token')
+    #         if refresh_token:
+    #             token = RefreshToken(refresh_token)
+    #             token.blacklist()
+    #             return Response(
+    #                 {"message": "Successfully logged out"}, 
+    #                 status=status.HTTP_200_OK
+    #             )
+    #         else:
+    #             return Response(
+    #                 {"error": "Refresh token is required"}, 
+    #                 status=status.HTTP_400_BAD_REQUEST
+    #             )
+    #     except Exception as e:
+    #         return Response(
+    #             {"error": str(e)}, 
+    #             status=status.HTTP_400_BAD_REQUEST
+    #         )
 
 @extend_schema(
     tags=['Authentication'],
