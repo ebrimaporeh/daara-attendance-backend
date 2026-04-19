@@ -1,0 +1,22 @@
+Update demo login
+
+Correct ana muslimah name
+
+Remove admin registration
+
+paginate attendance from the backend
+
+
+Remove dummy data
+
+
+make students and attendance filter, search and sorting from the backend
+
+Update add new student
+
+Update delete student
+
+Edit profile
+
+Make it an app
+

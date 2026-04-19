@@ -1,0 +1,13 @@
+-r base.txt
+
+# Production server
+gunicorn==25.3.0
+
+# Production database (choose one)
+# PostgreSQL
+psycopg2-binary>=2.9.0
+# OR MySQL
+# mysqlclient>=2.2.0
+
+# Optional: Redis for caching (if needed)
+# django-redis>=5.4.0
