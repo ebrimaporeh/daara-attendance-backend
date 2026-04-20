@@ -12,7 +12,7 @@ class UserManager(BaseUserManager):
         
         # Validate phone number format
         if not self.validate_phone_number(phone):
-            raise ValueError('Phone number must be 7 digits starting with 2,4,5,6,7, or 9')
+            raise ValueError('Phone number must be a gambian number of 7 digits and not start with 0 or 1.')
         
         user = self.model(phone=phone, **extra_fields)
         user.set_password(password)
@@ -33,8 +33,8 @@ class UserManager(BaseUserManager):
     
     @staticmethod
     def validate_phone_number(phone):
-        """Validate phone number: 7 digits starting with 2,4,5,6,7,9"""
-        pattern = r'^[245679]\d{6}$'
+        """Validate phone number: 7 digits starting with 2-9"""
+        pattern = r'^[2-9]\d{6}$'
         return bool(re.match(pattern, str(phone)))
 
 class User(AbstractBaseUser, PermissionsMixin):

@@ -9,10 +9,10 @@ class PhoneNumberField(serializers.CharField):
     
     def validate(self, value):
         # Validate phone number format (7 digits starting with 2,4,5,6,7,9)
-        pattern = r'^[245679]\d{6}$'
+        pattern = r'^[2-9]\d{6}$'
         if not re.match(pattern, str(value)):
             raise serializers.ValidationError(
-                "Phone number must be 7 digits starting with 2, 4, 5, 6, 7, or 9"
+                "Phone number must be a gambian number of 7 digits and not start with 0 or 1."
             )
         return value
 
