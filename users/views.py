@@ -11,12 +11,22 @@ from .serializers import (
     UserDetailSerializer, UserUpdateSerializer, ChangePasswordSerializer,
     UserListSerializer
 )
+from anamuslimah_project.pagination import CustomPageNumberPagination
+from django.utils import timezone
+import django.db.models as models
 
 @extend_schema_view(
     list=extend_schema(
         tags=['Users'],
         summary="List all users",
-        description="Returns a list of all users. Only accessible by admin users.",
+        description="Returns a paginated list of all users. Only accessible by admin users.",
+        parameters=[
+            OpenApiParameter(name='page', type=int, location=OpenApiParameter.QUERY, description='Page number'),
+            OpenApiParameter(name='page_size', type=int, location=OpenApiParameter.QUERY, description='Items per page (default: 20, max: 100)'),
+            OpenApiParameter(name='user_type', type=str, location=OpenApiParameter.QUERY, description='Filter by user type (student, admin)'),
+            OpenApiParameter(name='search', type=str, location=OpenApiParameter.QUERY, description='Search by name or phone'),
+            OpenApiParameter(name='is_active', type=bool, location=OpenApiParameter.QUERY, description='Filter by active status'),
+        ],
         responses={200: UserListSerializer(many=True)}
     ),
     retrieve=extend_schema(
@@ -41,12 +51,41 @@ from .serializers import (
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     permission_classes = [IsAuthenticated]
+    pagination_class = CustomPageNumberPagination  # Remove the list brackets
     
     def get_queryset(self):
         user = self.request.user
+        
+        # Start with base queryset
         if user.user_type == 'admin':
-            return User.objects.all()
-        return User.objects.filter(id=user.id)
+            queryset = User.objects.all()
+        else:
+            queryset = User.objects.filter(id=user.id)
+        
+        # Apply filters
+        user_type = self.request.query_params.get('user_type')
+        if user_type and user_type in ['student', 'admin']:
+            queryset = queryset.filter(user_type=user_type)
+        
+        is_active = self.request.query_params.get('is_active')
+        if is_active is not None:
+            if is_active.lower() == 'true':
+                queryset = queryset.filter(is_active=True)
+            elif is_active.lower() == 'false':
+                queryset = queryset.filter(is_active=False)
+        
+        # Search by name or phone
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                models.Q(first_name__icontains=search) |
+                models.Q(last_name__icontains=search) |
+                models.Q(fathers_first_name__icontains=search) |
+                models.Q(phone__icontains=search)
+            )
+        
+        # Order by most recent first
+        return queryset.order_by('-date_joined')
     
     def get_serializer_class(self):
         if self.action == 'list':
@@ -59,41 +98,107 @@ class UserViewSet(viewsets.ModelViewSet):
     
     @extend_schema(
         tags=['Users'],
-        summary="Get students list",
-        description="Returns a list of all users with student role. Only accessible by admin users.",
+        summary="Get students list with pagination",
+        description="Returns a paginated list of all users with student role. Only accessible by admin users.",
+        parameters=[
+            OpenApiParameter(name='page', type=int, location=OpenApiParameter.QUERY, description='Page number'),
+            OpenApiParameter(name='page_size', type=int, location=OpenApiParameter.QUERY, description='Items per page'),
+            OpenApiParameter(name='search', type=str, location=OpenApiParameter.QUERY, description='Search by name or phone'),
+        ],
         responses={200: UserListSerializer(many=True)}
     )
     @action(detail=False, methods=['get'], url_path='students')
     def get_students(self, request):
-        """Get all users with student role"""
+        """Get all users with student role (paginated)"""
         if request.user.user_type != 'admin':
             return Response(
                 {"error": "Permission denied. Only admins can access this endpoint."}, 
                 status=status.HTTP_403_FORBIDDEN
             )
         
-        students = User.objects.filter(user_type='student')
+        students = User.objects.filter(user_type='student').order_by('first_name', 'last_name')
+        
+        # Apply search filter
+        search = request.query_params.get('search')
+        if search:
+            students = students.filter(
+                models.Q(first_name__icontains=search) |
+                models.Q(last_name__icontains=search) |
+                models.Q(fathers_first_name__icontains=search) |
+                models.Q(phone__icontains=search)
+            )
+        
+        # Apply pagination
+        page = self.paginate_queryset(students)
+        if page is not None:
+            serializer = UserListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
         serializer = UserListSerializer(students, many=True)
         return Response(serializer.data)
     
     @extend_schema(
         tags=['Users'],
-        summary="Get admins list",
-        description="Returns a list of all users with admin role. Only accessible by admin users.",
+        summary="Get admins list with pagination",
+        description="Returns a paginated list of all users with admin role. Only accessible by admin users.",
+        parameters=[
+            OpenApiParameter(name='page', type=int, location=OpenApiParameter.QUERY, description='Page number'),
+            OpenApiParameter(name='page_size', type=int, location=OpenApiParameter.QUERY, description='Items per page'),
+        ],
         responses={200: UserListSerializer(many=True)}
     )
     @action(detail=False, methods=['get'], url_path='admins')
     def get_admins(self, request):
-        """Get all users with admin role"""
+        """Get all users with admin role (paginated)"""
         if request.user.user_type != 'admin':
             return Response(
                 {"error": "Permission denied. Only admins can access this endpoint."}, 
                 status=status.HTTP_403_FORBIDDEN
             )
         
-        admins = User.objects.filter(user_type='admin')
+        admins = User.objects.filter(user_type='admin').order_by('first_name', 'last_name')
+        
+        # Apply pagination
+        page = self.paginate_queryset(admins)
+        if page is not None:
+            serializer = UserListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
         serializer = UserListSerializer(admins, many=True)
         return Response(serializer.data)
+    
+    @extend_schema(
+        tags=['Users'],
+        summary="Get user statistics",
+        description="Get statistics about users (total, active, by role). Only accessible by admin users.",
+        responses={200: OpenApiResponse(description="User statistics")}
+    )
+    @action(detail=False, methods=['get'], url_path='statistics')
+    def get_user_statistics(self, request):
+        """Get user statistics (admin only)"""
+        if request.user.user_type != 'admin':
+            return Response(
+                {"error": "Permission denied. Only admins can access this endpoint."}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        total_users = User.objects.count()
+        total_students = User.objects.filter(user_type='student').count()
+        total_admins = User.objects.filter(user_type='admin').count()
+        active_users = User.objects.filter(is_active=True).count()
+        inactive_users = User.objects.filter(is_active=False).count()
+        
+        return Response({
+            'total_users': total_users,
+            'total_students': total_students,
+            'total_admins': total_admins,
+            'active_users': active_users,
+            'inactive_users': inactive_users,
+            'recent_users': UserListSerializer(
+                User.objects.order_by('-date_joined')[:10], 
+                many=True
+            ).data
+        })
     
     @extend_schema(
         tags=['Users'],
@@ -127,13 +232,21 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        if user.id == request.user.id:
+            return Response(
+                {"error": "You cannot change your own role."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        old_role = user.user_type
         user.user_type = new_role
         user.save()
         
         return Response({
-            "message": f"User role changed to {new_role} successfully",
+            "message": f"User role changed from {old_role} to {new_role} successfully",
             "user_id": user.id,
             "user_name": user.full_name,
+            "old_role": old_role,
             "new_role": new_role
         })
     
@@ -171,6 +284,55 @@ class UserViewSet(viewsets.ModelViewSet):
     
     @extend_schema(
         tags=['Users'],
+        summary="Activate/deactivate user",
+        description="Activate or deactivate a user account. Only accessible by admin users.",
+        request={
+            'application/json': {
+                'type': 'object',
+                'properties': {
+                    'is_active': {'type': 'boolean'}
+                }
+            }
+        },
+        responses={200: OpenApiResponse(description="User status updated")}
+    )
+    @action(detail=True, methods=['patch'], url_path='toggle-active')
+    def toggle_active(self, request, pk=None):
+        """Activate/deactivate user (admin only)"""
+        if request.user.user_type != 'admin':
+            return Response(
+                {"error": "Permission denied. Only admins can change user status."}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        user = self.get_object()
+        
+        if user.id == request.user.id:
+            return Response(
+                {"error": "You cannot deactivate your own account."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        is_active = request.data.get('is_active')
+        if is_active is None:
+            return Response(
+                {"error": "is_active field is required"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        user.is_active = is_active
+        user.save()
+        
+        status_text = "activated" if is_active else "deactivated"
+        return Response({
+            "message": f"User {status_text} successfully",
+            "user_id": user.id,
+            "user_name": user.full_name,
+            "is_active": user.is_active
+        })
+    
+    @extend_schema(
+        tags=['Users'],
         summary="Logout user",
         description="Logout by blacklisting the refresh token.",
         request={
@@ -182,34 +344,41 @@ class UserViewSet(viewsets.ModelViewSet):
                 'required': ['refresh_token']
             }
         },
-        responses={200: OpenApiResponse(description="Successfully logged out")}
+        responses={
+            200: OpenApiResponse(description="Successfully logged out"),
+            400: OpenApiResponse(description="Invalid refresh token")
+        }
     )
-    
     @action(detail=False, methods=['post'], url_path='logout')
     def logout(self, request):
-        return Response({"message": "Logged out successfully"})    
-    
-    # def logout(self, request):
-    #     """Logout by blacklisting refresh token"""
-    #     try:
-    #         refresh_token = request.data.get('refresh_token')
-    #         if refresh_token:
-    #             token = RefreshToken(refresh_token)
-    #             token.blacklist()
-    #             return Response(
-    #                 {"message": "Successfully logged out"}, 
-    #                 status=status.HTTP_200_OK
-    #             )
-    #         else:
-    #             return Response(
-    #                 {"error": "Refresh token is required"}, 
-    #                 status=status.HTTP_400_BAD_REQUEST
-    #             )
-    #     except Exception as e:
-    #         return Response(
-    #             {"error": str(e)}, 
-    #             status=status.HTTP_400_BAD_REQUEST
-    #         )
+        """
+        Logout endpoint - validates token but doesn't blacklist
+        Relies on short token lifetimes and frontend cleanup
+        """
+        refresh_token = request.data.get('refresh') or request.data.get('refresh_token')
+        
+        if not refresh_token:
+            return Response(
+                {"error": "Refresh token is required"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Optional: Validate token format/expiry (without blacklisting)
+        try:
+            token = RefreshToken(refresh_token)
+            # Just to check if token is valid - no blacklist
+            print(f"Logout for user: {token['user_id']}")
+        except Exception as e:
+            # Token might be expired - still return success
+            print(f"Invalid token during logout: {e}")
+        
+        # Always return success
+        return Response(
+            {"message": "Successfully logged out"}, 
+            status=status.HTTP_200_OK
+        )
+
+
 
 @extend_schema(
     tags=['Authentication'],
@@ -252,6 +421,7 @@ class RegisterView(generics.CreateAPIView):
             "access": str(refresh.access_token)
         }, status=status.HTTP_201_CREATED)
 
+
 @extend_schema(
     tags=['Authentication'],
     summary="User Login",
@@ -282,6 +452,10 @@ class LoginView(generics.GenericAPIView):
         
         user = serializer.validated_data['user']
         
+        # Update last login
+        user.last_login = timezone.now()
+        user.save(update_fields=['last_login'])
+        
         # Generate tokens
         refresh = RefreshToken.for_user(user)
         
@@ -290,6 +464,7 @@ class LoginView(generics.GenericAPIView):
             "access": str(refresh.access_token),
             "user": UserResponseSerializer(user).data
         })
+
 
 @extend_schema(
     tags=['Authentication'],

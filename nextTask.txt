@@ -20,3 +20,4 @@ Edit profile
 
 Make it an app
 
+Use token blacklisting in logout

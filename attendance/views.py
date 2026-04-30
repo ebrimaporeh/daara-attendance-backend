@@ -1,3 +1,4 @@
+# attendance/views.py
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -8,15 +9,27 @@ from drf_spectacular.types import OpenApiTypes
 from django.utils import timezone
 from datetime import datetime
 from calendar import monthrange
+from django.db.models import Q, Count, Case, When, IntegerField
 from .models import AttendanceRecord
 from .serializers import AttendanceRecordSerializer, AttendanceCreateSerializer, AttendanceUpdateSerializer
 from users.models import User
+from anamuslimah_project.pagination import CustomPageNumberPagination, LargeResultsSetPagination
 
 @extend_schema_view(
     list=extend_schema(
         tags=['Attendance'],
         summary="List attendance records",
-        description="Returns a list of attendance records. Admins see all, students see only their own.",
+        description="Returns a paginated list of attendance records. Admins see all, students see only their own.",
+        parameters=[
+            OpenApiParameter(name='page', type=int, location=OpenApiParameter.QUERY, description='Page number'),
+            OpenApiParameter(name='page_size', type=int, location=OpenApiParameter.QUERY, description='Items per page (default: 20, max: 100)'),
+            OpenApiParameter(name='status', type=str, location=OpenApiParameter.QUERY, description='Filter by status (present, absent, late, excused, sick)'),
+            OpenApiParameter(name='date', type=str, location=OpenApiParameter.QUERY, description='Filter by date (YYYY-MM-DD)'),
+            OpenApiParameter(name='start_date', type=str, location=OpenApiParameter.QUERY, description='Filter by start date (YYYY-MM-DD)'),
+            OpenApiParameter(name='end_date', type=str, location=OpenApiParameter.QUERY, description='Filter by end date (YYYY-MM-DD)'),
+            OpenApiParameter(name='student_id', type=int, location=OpenApiParameter.QUERY, description='Filter by student ID (admins only)'),
+            OpenApiParameter(name='search', type=str, location=OpenApiParameter.QUERY, description='Search by student name or phone'),
+        ],
         responses={200: AttendanceRecordSerializer(many=True)}
     ),
     create=extend_schema(
@@ -46,15 +59,71 @@ from users.models import User
     )
 )
 class AttendanceViewSet(viewsets.ModelViewSet):
-    queryset = AttendanceRecord.objects.all()
+    queryset = AttendanceRecord.objects.all().select_related('student', 'marked_by')
     permission_classes = [IsAuthenticated]
     authentication_classes = [JWTAuthentication]
+    pagination_class = CustomPageNumberPagination
     
     def get_queryset(self):
         user = self.request.user
+        queryset = AttendanceRecord.objects.all().select_related('student', 'marked_by')
+        
+        # Filter by user type
         if user.user_type == 'admin':
-            return AttendanceRecord.objects.all()
-        return AttendanceRecord.objects.filter(student=user)
+            queryset = AttendanceRecord.objects.all()
+        else:
+            queryset = AttendanceRecord.objects.filter(student=user)
+        
+        # Apply filters
+        status = self.request.query_params.get('status')
+        if status and status in ['present', 'absent', 'late', 'excused', 'sick']:
+            queryset = queryset.filter(status=status)
+        
+        date = self.request.query_params.get('date')
+        if date:
+            try:
+                queryset = queryset.filter(date=date)
+            except:
+                pass
+        
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date and end_date:
+            try:
+                queryset = queryset.filter(date__range=[start_date, end_date])
+            except:
+                pass
+        elif start_date:
+            try:
+                queryset = queryset.filter(date__gte=start_date)
+            except:
+                pass
+        elif end_date:
+            try:
+                queryset = queryset.filter(date__lte=end_date)
+            except:
+                pass
+        
+        # Admin can filter by student
+        student_id = self.request.query_params.get('student_id')
+        if user.user_type == 'admin' and student_id:
+            try:
+                queryset = queryset.filter(student_id=int(student_id))
+            except:
+                pass
+        
+        # Search by student name or phone
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(student__first_name__icontains=search) |
+                Q(student__last_name__icontains=search) |
+                Q(student__phone__icontains=search) |
+                Q(student__fathers_first_name__icontains=search)
+            )
+        
+        # Order by date (newest first) and then by student name
+        return queryset.order_by('-date', 'student__first_name', 'student__last_name')
     
     def get_serializer_class(self):
         if self.action == 'create':
@@ -68,16 +137,18 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     
     @extend_schema(
         tags=['Attendance'],
-        summary="Get student attendance",
-        description="Get attendance records for a specific student. Admins can access any student, students can only access their own.",
+        summary="Get student attendance with pagination",
+        description="Get paginated attendance records for a specific student. Admins can access any student, students can only access their own.",
         parameters=[
-            OpenApiParameter(name='student_id', type=int, location=OpenApiParameter.PATH, description='Student ID')
+            OpenApiParameter(name='student_id', type=int, location=OpenApiParameter.PATH, description='Student ID'),
+            OpenApiParameter(name='page', type=int, location=OpenApiParameter.QUERY, description='Page number'),
+            OpenApiParameter(name='page_size', type=int, location=OpenApiParameter.QUERY, description='Items per page'),
         ],
         responses={200: AttendanceRecordSerializer(many=True)}
     )
     @action(detail=False, methods=['get'], url_path='student/(?P<student_id>[^/.]+)')
     def get_student_attendance(self, request, student_id=None):
-        """Get attendance records for a specific student"""
+        """Get paginated attendance records for a specific student"""
         user = request.user
         
         # Check permission
@@ -89,7 +160,14 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         
         try:
             student = User.objects.get(id=student_id, user_type='student')
-            attendance = AttendanceRecord.objects.filter(student=student)
+            attendance = AttendanceRecord.objects.filter(student=student).order_by('-date')
+            
+            # Apply pagination
+            page = self.paginate_queryset(attendance)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+            
             serializer = self.get_serializer(attendance, many=True)
             return Response(serializer.data)
         except User.DoesNotExist:
@@ -100,17 +178,19 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     
     @extend_schema(
         tags=['Attendance'],
-        summary="Get attendance by date range",
-        description="Get attendance records within a specific date range.",
+        summary="Get attendance by date range with pagination",
+        description="Get paginated attendance records within a specific date range.",
         parameters=[
             OpenApiParameter(name='start_date', type=str, location=OpenApiParameter.QUERY, description='Start date (YYYY-MM-DD)', required=True),
             OpenApiParameter(name='end_date', type=str, location=OpenApiParameter.QUERY, description='End date (YYYY-MM-DD)', required=True),
+            OpenApiParameter(name='page', type=int, location=OpenApiParameter.QUERY, description='Page number'),
+            OpenApiParameter(name='page_size', type=int, location=OpenApiParameter.QUERY, description='Items per page'),
         ],
         responses={200: AttendanceRecordSerializer(many=True)}
     )
     @action(detail=False, methods=['get'], url_path='date-range')
     def get_by_date_range(self, request):
-        """Get attendance records for a date range"""
+        """Get paginated attendance records for a date range"""
         start_date = request.query_params.get('start_date')
         end_date = request.query_params.get('end_date')
         
@@ -130,7 +210,14 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            records = self.get_queryset().filter(date__range=[start, end])
+            records = self.get_queryset().filter(date__range=[start, end]).order_by('-date')
+            
+            # Apply pagination
+            page = self.paginate_queryset(records)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+            
             serializer = self.get_serializer(records, many=True)
             return Response(serializer.data)
         except ValueError:
@@ -162,6 +249,8 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 date = datetime.strptime(date_str, '%Y-%m-%d').date()
                 records = queryset.filter(date=date)
                 
+                total_students = User.objects.filter(user_type='student').count()
+                
                 summary = {
                     'date': date_str,
                     'present': records.filter(status='present').count(),
@@ -170,9 +259,10 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                     'late': records.filter(status='late').count(),
                     'sick': records.filter(status='sick').count(),
                     'total': records.count(),
+                    'total_students': total_students,
                     'attendance_rate': round(
-                        (records.filter(status='present').count() / records.count() * 100) 
-                        if records.count() > 0 else 0, 2
+                        (records.filter(status='present').count() / total_students * 100) 
+                        if total_students > 0 else 0, 2
                     )
                 }
                 return Response(summary)
@@ -216,29 +306,63 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     
     @extend_schema(
         tags=['Attendance'],
-        summary="Get today's attendance",
-        description="Get attendance records and summary for today.",
+        summary="Get today's attendance with pagination",
+        description="Get paginated attendance records and summary for today.",
+        parameters=[
+            OpenApiParameter(name='page', type=int, location=OpenApiParameter.QUERY, description='Page number'),
+            OpenApiParameter(name='page_size', type=int, location=OpenApiParameter.QUERY, description='Items per page'),
+        ],
         responses={200: OpenApiResponse(description="Today's attendance data")}
     )
     @action(detail=False, methods=['get'], url_path='today')
     def get_today_attendance(self, request):
-        """Get today's attendance records"""
+        """Get today's attendance records with pagination"""
         today = timezone.now().date()
-        records = self.get_queryset().filter(date=today)
+        records = self.get_queryset().filter(date=today).order_by('student__first_name', 'student__last_name')
+        
+        # Apply pagination
+        page = self.paginate_queryset(records)
+        
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            summary = {
+                'present': records.filter(status='present').count(),
+                'absent': records.filter(status='absent').count(),
+                'excused': records.filter(status='excused').count(),
+                'late': records.filter(status='late').count(),
+                'sick': records.filter(status='sick').count(),
+                'total': records.count()
+            }
+            
+            response_data = {
+                'date': today,
+                'summary': summary,
+                'records': serializer.data
+            }
+            
+            # Add pagination info to the response
+            response_data['pagination'] = {
+                'current_page': page.number,
+                'total_pages': page.paginator.num_pages,
+                'total_items': page.paginator.count,
+                'has_next': page.has_next(),
+                'has_previous': page.has_previous(),
+                'page_size': page.paginator.per_page
+            }
+            
+            return Response(response_data)
+        
         serializer = self.get_serializer(records, many=True)
-        
-        summary = {
-            'present': records.filter(status='present').count(),
-            'absent': records.filter(status='absent').count(),
-            'excused': records.filter(status='excused').count(),
-            'late': records.filter(status='late').count(),
-            'sick': records.filter(status='sick').count(),
-            'total': records.count()
-        }
-        
         return Response({
             'date': today,
-            'summary': summary,
+            'summary': {
+                'present': records.filter(status='present').count(),
+                'absent': records.filter(status='absent').count(),
+                'excused': records.filter(status='excused').count(),
+                'late': records.filter(status='late').count(),
+                'sick': records.filter(status='sick').count(),
+                'total': records.count()
+            },
             'records': serializer.data
         })
     
@@ -265,17 +389,42 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             )
         
         records_data = request.data.get('records', [])
-        date = request.data.get('date', timezone.now().date())
+        date_str = request.data.get('date', timezone.now().date())
+        
+        # Parse date if provided as string
+        if isinstance(date_str, str):
+            try:
+                date = datetime.strptime(date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response(
+                    {"error": "Invalid date format. Use YYYY-MM-DD"}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            date = date_str
         
         created_records = []
         errors = []
         
+        # Check for existing records on this date
+        existing_students = AttendanceRecord.objects.filter(date=date).values_list('student_id', flat=True)
+        
         for record_data in records_data:
             record_data['date'] = date
+            
+            # Check if record already exists
+            if record_data.get('student') in existing_students:
+                errors.append({
+                    'student_id': record_data.get('student'),
+                    'error': 'Attendance already marked for this student on this date'
+                })
+                continue
+            
             serializer = AttendanceCreateSerializer(data=record_data)
             if serializer.is_valid():
                 record = serializer.save(marked_by=request.user)
                 created_records.append({
+                    'id': record.id,
                     'student_id': record.student.id,
                     'student_name': record.student.full_name,
                     'status': record.status
@@ -289,5 +438,59 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         return Response({
             'message': f'Created {len(created_records)} records',
             'created': created_records,
-            'errors': errors
+            'errors': errors,
+            'total_processed': len(records_data),
+            'total_success': len(created_records),
+            'total_errors': len(errors)
         }, status=status.HTTP_201_CREATED)
+    
+    @extend_schema(
+        tags=['Attendance'],
+        summary="Get attendance statistics",
+        description="Get overall attendance statistics with pagination for trend data.",
+        responses={200: OpenApiResponse(description="Attendance statistics")}
+    )
+    @action(detail=False, methods=['get'], url_path='statistics')
+    def get_statistics(self, request):
+        """Get overall attendance statistics"""
+        queryset = self.get_queryset()
+        
+        # Get all months with data
+        months = queryset.dates('date', 'month', order='DESC')[:12]
+        
+        monthly_data = []
+        for month in months:
+            start_date = month
+            end_date = datetime(month.year, month.month, monthrange(month.year, month.month)[1]).date()
+            month_records = queryset.filter(date__range=[start_date, end_date])
+            
+            total = month_records.count()
+            present = month_records.filter(status='present').count()
+            
+            monthly_data.append({
+                'month': month.strftime('%Y-%m'),
+                'attendance_rate': round((present / total * 100) if total > 0 else 0, 2),
+                'present': present,
+                'absent': month_records.filter(status='absent').count(),
+                'late': month_records.filter(status='late').count(),
+                'excused': month_records.filter(status='excused').count(),
+                'sick': month_records.filter(status='sick').count(),
+                'total': total
+            })
+        
+        # Overall statistics
+        total_records = queryset.count()
+        total_present = queryset.filter(status='present').count()
+        
+        return Response({
+            'overall_rate': round((total_present / total_records * 100) if total_records > 0 else 0, 2),
+            'total_records': total_records,
+            'monthly_trend': monthly_data,
+            'status_breakdown': {
+                'present': queryset.filter(status='present').count(),
+                'absent': queryset.filter(status='absent').count(),
+                'late': queryset.filter(status='late').count(),
+                'excused': queryset.filter(status='excused').count(),
+                'sick': queryset.filter(status='sick').count()
+            }
+        })
