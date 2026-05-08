@@ -315,6 +315,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         responses={200: OpenApiResponse(description="Today's attendance data")}
     )
     @action(detail=False, methods=['get'], url_path='today')
+    
     def get_today_attendance(self, request):
         """Get today's attendance records with pagination"""
         today = timezone.now().date()
@@ -341,14 +342,14 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             }
             
             # Add pagination info to the response
-            response_data['pagination'] = {
-                'current_page': page.number,
-                'total_pages': page.paginator.num_pages,
-                'total_items': page.paginator.count,
-                'has_next': page.has_next(),
-                'has_previous': page.has_previous(),
-                'page_size': page.paginator.per_page
-            }
+            # response_data['pagination'] = {
+            #     'current_page': page.number,
+            #     'total_pages': page.paginator.num_pages,
+            #     'total_items': page.paginator.count,
+            #     'has_next': page.has_next(),
+            #     'has_previous': page.has_previous(),
+            #     'page_size': page.paginator.per_page
+            # }
             
             return Response(response_data)
         
