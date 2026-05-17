@@ -1,4 +1,4 @@
-# utils/pagination.py
+# anamuslimah_project/pagination.py
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from collections import OrderedDict
@@ -33,8 +33,19 @@ class CustomPageNumberPagination(PageNumberPagination):
     
     def get_paginated_response_schema(self, view):
         """
-        Override to provide better OpenAPI schema documentation
+        Override to provide better OpenAPI schema documentation.
+        This method is called during schema generation.
         """
+        # Get the serializer class from the view if available
+        try:
+            if hasattr(view, 'get_serializer'):
+                serializer = view.get_serializer()
+                schema_fields = serializer.get_fields()
+            else:
+                schema_fields = {}
+        except (AttributeError, TypeError):
+            schema_fields = {}
+        
         return {
             'type': 'object',
             'properties': {
@@ -42,7 +53,7 @@ class CustomPageNumberPagination(PageNumberPagination):
                 'message': {'type': 'string', 'example': 'Data retrieved successfully'},
                 'data': {
                     'type': 'array',
-                    'items': view.get_serializer().get_fields()
+                    'items': {}
                 },
                 'pagination': {
                     'type': 'object',
